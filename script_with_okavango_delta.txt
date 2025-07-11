@@ -1,0 +1,221 @@
+// ------------ SCRIPT WITH OKAVANGO DELTA OUTLINE ------------ //
+var papyrus   = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+var table     = ee.FeatureCollection("projects/ee-okavango/assets/shapes/okavango_outline_20241031");
+
+// Get unified geometries for AOIs
+var papyrusGeom = papyrus.geometry().dissolve({'maxError': 1});
+var phragmiteGeom = phragmite.geometry().dissolve({'maxError': 1});
+var okavangoDeltaGeom = table.geometry().dissolve({'maxError': 1});
+
+// ------------ FUNCTION: Monthly NDVI Composite ------------ //
+function getMonthlyNDVI(aoi, month, year) {
+  var start = ee.Date.fromYMD(year, month, 1);
+  var end   = start.advance(1, 'month');
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterBounds(aoi)
+              .filterDate(start, end)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+  
+  var imageCount = s2.size();
+  
+  // If no images, try without cloud filter
+  s2 = ee.Algorithms.If(
+    imageCount.eq(0),
+    ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filterBounds(aoi)
+      .filterDate(start, end),
+    s2
+  );
+  
+  imageCount = ee.ImageCollection(s2).size();
+  
+  // Create a dummy NDVI image if no data exists
+  var ndvi = ee.Algorithms.If(
+    imageCount.gt(0),
+    ee.ImageCollection(s2).median().clip(aoi).normalizedDifference(['B8','B4']).rename('NDVI'),
+    ee.Image.constant(-9999).rename('NDVI')
+  );
+  
+  return ee.Image(ndvi).set({
+    'month': month, 
+    'year': year,
+    'system:time_start': start.millis(),
+    'image_count': imageCount
+  });
+}
+
+// ------------ BUILD NDVI TIME SERIES ------------ //
+var months = ee.List.sequence(1, 12);
+var year   = 2023;
+
+var ndviPapyrusSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(papyrusGeom, m, year);
+  })
+);
+
+var ndviPhragmiteSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(phragmiteGeom, m, year);
+  })
+);
+
+var ndviOkavangoDeltaSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(okavangoDeltaGeom, m, year);
+  })
+);
+
+print('NDVI series built');
+print('Papyrus series size:', ndviPapyrusSeries.size());
+print('Phragmite series size:', ndviPhragmiteSeries.size());
+print('Okavango Delta series size:', ndviOkavangoDeltaSeries.size());
+
+// ------------ EXPORT FUNCTION ------------ //
+function exportNDVIMonthlyStats(series, aoiGeom, className) {
+  var features = series.map(function(img) {
+    var month = img.get('month');
+    var year = img.get('year');
+    var imageCount = img.get('image_count');
+    
+    var ndviMean = img.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoiGeom,
+      scale: 10,
+      maxPixels: 1e9,
+      bestEffort: true
+    }).get('NDVI');
+    
+    return ee.Feature(null, {
+      class: className,
+      year: year,
+      month: month,
+      date: ee.String(ee.Number(year).format()).cat('-').cat(ee.Number(month).format('%02d')),
+      ndvi_mean: ndviMean,
+      image_count: imageCount
+    });
+  });
+  
+  Export.table.toDrive({
+    collection: ee.FeatureCollection(features),
+    description: className + '_NDVI_Stats_2023',
+    folder: 'EE_Seasonal_NDVI',
+    fileFormat: 'CSV'
+  });
+  
+  print('Export task created for:', className);
+}
+
+// Export all three datasets
+exportNDVIMonthlyStats(ndviPapyrusSeries, papyrusGeom, 'Papyrus');
+exportNDVIMonthlyStats(ndviPhragmiteSeries, phragmiteGeom, 'Phragmite');
+exportNDVIMonthlyStats(ndviOkavangoDeltaSeries, okavangoDeltaGeom, 'OkavangoDelta');
+
+// ------------ CREATE CHARTS FOR VALID DATA ------------ //
+var papyrusValid = ndviPapyrusSeries.filter(ee.Filter.gt('image_count', 0));
+var phragmiteValid = ndviPhragmiteSeries.filter(ee.Filter.gt('image_count', 0));
+var okavangoDeltaValid = ndviOkavangoDeltaSeries.filter(ee.Filter.gt('image_count', 0));
+
+print('Valid months - Papyrus:', papyrusValid.size());
+print('Valid months - Phragmite:', phragmiteValid.size());
+print('Valid months - Okavango Delta:', okavangoDeltaValid.size());
+
+// Individual charts
+var chartPapyrus = ui.Chart.image.series({
+  imageCollection: papyrusValid,
+  region: papyrusGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Papyrus',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['green']
+});
+print(chartPapyrus);
+
+var chartPhragmite = ui.Chart.image.series({
+  imageCollection: phragmiteValid,
+  region: phragmiteGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Phragmite',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['blue']
+});
+print(chartPhragmite);
+
+var chartOkavangoDelta = ui.Chart.image.series({
+  imageCollection: okavangoDeltaValid,
+  region: okavangoDeltaGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['orange']
+});
+print(chartOkavangoDelta);
+
+// ------------ COMBINED COMPARISON CHART ------------ //
+var combinedChart = ui.Chart.image.series({
+  imageCollection: papyrusValid.merge(phragmiteValid).merge(okavangoDeltaValid),
+  region: papyrusGeom.union(phragmiteGeom).union(okavangoDeltaGeom),
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI Comparison - Papyrus vs Phragmite vs Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['green', 'blue', 'orange'],
+  series: {
+    0: {labelInLegend: 'Papyrus'},
+    1: {labelInLegend: 'Phragmite'},
+    2: {labelInLegend: 'Okavango Delta'}
+  }
+});
+print(combinedChart);
+
+// ------------ ADD LAYERS TO MAP ------------ //
+Map.centerObject(okavangoDeltaGeom, 8);
+Map.addLayer(okavangoDeltaGeom, {color: 'orange', fillColor: 'orange00'}, 'Okavango Delta Outline');
+Map.addLayer(papyrusGeom, {color: 'green'}, 'Papyrus AOI');
+Map.addLayer(phragmiteGeom, {color: 'blue'}, 'Phragmite AOI');
+
+// Add a sample NDVI image for visualization
+var sampleMonth = 6; // June
+var sampleNDVI = getMonthlyNDVI(okavangoDeltaGeom, sampleMonth, year);
+
+Map.addLayer(sampleNDVI, {
+  min: 0,
+  max: 1,
+  palette: ['red', 'yellow', 'green']
+}, 'Sample NDVI (June 2023) - Okavango Delta');
+
+// Add another NDVI layer with better visualization
+var ndviViz = {
+  min: 0.2,
+  max: 0.8,
+  palette: ['brown', 'yellow', 'lightgreen', 'darkgreen']
+};
+Map.addLayer(sampleNDVI, ndviViz, 'NDVI Detailed (June 2023)');
+
+print('Script completed! Check Tasks tab to run exports.');
+print('Analysis includes Papyrus, Phragmite, and entire Okavango Delta region.');
