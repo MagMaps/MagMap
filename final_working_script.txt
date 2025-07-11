@@ -1,0 +1,196 @@
+// ------------ FINAL WORKING VERSION ------------ //
+var papyrus   = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+
+// Get unified geometries for AOIs
+var papyrusGeom = papyrus.geometry().dissolve({'maxError': 1});
+var phragmiteGeom = phragmite.geometry().dissolve({'maxError': 1});
+
+// ------------ FUNCTION: Monthly NDVI Composite (with empty collection handling) ------------ //
+function getMonthlyNDVI(aoi, month, year) {
+  var start = ee.Date.fromYMD(year, month, 1);
+  var end   = start.advance(1, 'month');
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterBounds(aoi)
+              .filterDate(start, end)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10));
+  
+  var imageCount = s2.size();
+  
+  // Check if collection has images
+  var hasImages = imageCount.gt(0);
+  
+  // Only create NDVI if we have images, otherwise return null
+  var ndvi = ee.Algorithms.If(
+    hasImages,
+    // If images exist, calculate NDVI
+    s2.median().clip(aoi).normalizedDifference(['B8','B4']).rename('NDVI')
+      .set({
+        'month': month, 
+        'year': year,
+        'system:time_start': start.millis(),
+        'image_count': imageCount,
+        'has_data': true
+      }),
+    // If no images, return null (will be filtered out)
+    null
+  );
+  
+  return ndvi;
+}
+
+// ------------ BUILD NDVI TIME SERIES ------------ //
+var months = ee.List.sequence(1, 12);
+var year   = 2023;
+
+// Create NDVI series and filter out null values
+var ndviPapyrusList = months.map(function(m) {
+  return getMonthlyNDVI(papyrusGeom, m, year);
+});
+
+var ndviPhragmiteList = months.map(function(m) {
+  return getMonthlyNDVI(phragmiteGeom, m, year);
+});
+
+// Filter out null values (months with no data)
+var papyrusFiltered = ndviPapyrusList.filter(ee.Filter.notNull(['item']));
+var phragmiteFiltered = ndviPhragmiteList.filter(ee.Filter.notNull(['item']));
+
+// Create image collections from filtered lists
+var ndviPapyrusSeries = ee.ImageCollection.fromImages(papyrusFiltered);
+var ndviPhragmiteSeries = ee.ImageCollection.fromImages(phragmiteFiltered);
+
+print('NDVI series built successfully');
+print('Papyrus months with data:', ndviPapyrusSeries.size());
+print('Phragmite months with data:', ndviPhragmiteSeries.size());
+
+// ------------ PLOT NDVI TRENDS ------------ //
+// Only create charts if we have data
+var papyrusCount = ndviPapyrusSeries.size();
+var phragmiteCount = ndviPhragmiteSeries.size();
+
+// Conditional chart creation for Papyrus
+ee.Algorithms.If(
+  papyrusCount.gt(0),
+  function() {
+    var chartPapyrus = ui.Chart.image.series({
+      imageCollection: ndviPapyrusSeries,
+      region: papyrusGeom,
+      reducer: ee.Reducer.mean(),
+      scale: 10,
+      xProperty: 'system:time_start'
+    }).setOptions({
+      title: 'Seasonal NDVI – Papyrus',
+      hAxis: {title: 'Month', format: 'MM'},
+      vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+      lineWidth: 2,
+      pointSize: 3,
+      interpolateNulls: true
+    });
+    print(chartPapyrus);
+    return null;
+  },
+  function() {
+    print('No Papyrus data available for charting');
+    return null;
+  }
+)();
+
+// Conditional chart creation for Phragmite
+ee.Algorithms.If(
+  phragmiteCount.gt(0),
+  function() {
+    var chartPhragmite = ui.Chart.image.series({
+      imageCollection: ndviPhragmiteSeries,
+      region: phragmiteGeom,
+      reducer: ee.Reducer.mean(),
+      scale: 10,
+      xProperty: 'system:time_start'
+    }).setOptions({
+      title: 'Seasonal NDVI – Phragmite',
+      hAxis: {title: 'Month', format: 'MM'},
+      vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+      lineWidth: 2,
+      pointSize: 3,
+      interpolateNulls: true
+    });
+    print(chartPhragmite);
+    return null;
+  },
+  function() {
+    print('No Phragmite data available for charting');
+    return null;
+  }
+)();
+
+// ------------ EXPORT NDVI MEAN PER MONTH ------------ //
+function exportNDVIMonthlyStats(series, aoiGeom, className) {
+  var features = series.map(function(img) {
+    var month = img.get('month');
+    var year = img.get('year');
+    var imageCount = img.get('image_count');
+    
+    var stats = img.reduceRegion({
+      reducer: ee.Reducer.mean().combine({
+        reducer2: ee.Reducer.stdDev(),
+        sharedInputs: true
+      }),
+      geometry: aoiGeom,
+      scale: 10,
+      maxPixels: 1e9,
+      bestEffort: true,
+      tileScale: 2
+    });
+    
+    return ee.Feature(null, {
+      class: className,
+      year: year,
+      month: month,
+      date: ee.String(ee.Number(year).format()).cat('-').cat(ee.Number(month).format('%02d')),
+      ndvi_mean: stats.get('NDVI_mean'),
+      ndvi_stdDev: stats.get('NDVI_stdDev'),
+      image_count: imageCount
+    });
+  });
+  
+  Export.table.toDrive({
+    collection: ee.FeatureCollection(features),
+    description: className + '_NDVI_MonthlyStats_' + year,
+    folder: 'EE_Seasonal_NDVI',
+    fileFormat: 'CSV'
+  });
+}
+
+// Only export if we have data
+ee.Algorithms.If(
+  papyrusCount.gt(0),
+  function() {
+    exportNDVIMonthlyStats(ndviPapyrusSeries, papyrusGeom, 'Papyrus');
+    return null;
+  },
+  function() {
+    print('No Papyrus data to export');
+    return null;
+  }
+)();
+
+ee.Algorithms.If(
+  phragmiteCount.gt(0),
+  function() {
+    exportNDVIMonthlyStats(ndviPhragmiteSeries, phragmiteGeom, 'Phragmite');
+    return null;
+  },
+  function() {
+    print('No Phragmite data to export');
+    return null;
+  }
+)();
+
+// Add AOIs to map for visualization
+Map.centerObject(papyrusGeom, 10);
+Map.addLayer(papyrusGeom, {color: 'red'}, 'Papyrus AOI');
+Map.addLayer(phragmiteGeom, {color: 'blue'}, 'Phragmite AOI');
+
+print('Script completed successfully!');
+print('Check the Tasks tab for export jobs if data was available.');
