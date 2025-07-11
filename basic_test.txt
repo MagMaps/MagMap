@@ -1,0 +1,33 @@
+// Basic test - check if everything loads
+print('Testing basic operations...');
+
+// Load assets
+var papyrus = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+var delta = ee.FeatureCollection("projects/ee-okavango/assets/shapes/okavango_outline_20241031");
+
+print('Papyrus size:', papyrus.size());
+print('Phragmite size:', phragmite.size());
+print('Delta size:', delta.size());
+
+// Test Sentinel-2 data
+var sentinel = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                 .filterDate('2023-06-01', '2023-06-30')
+                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+
+print('June 2023 Sentinel-2 images:', sentinel.size());
+                 
+var image = sentinel.median();
+print('Available bands:', image.bandNames());
+
+// Simple NDVI calculation
+var ndvi = image.normalizedDifference(['B8', 'B4']);
+print('NDVI calculated successfully');
+
+// Add to map
+Map.centerObject(delta.geometry(), 8);
+Map.addLayer(delta.geometry(), {color: 'orange'}, 'Delta');
+Map.addLayer(papyrus.geometry(), {color: 'green'}, 'Papyrus');
+Map.addLayer(phragmite.geometry(), {color: 'blue'}, 'Phragmite');
+
+print('Test completed successfully');

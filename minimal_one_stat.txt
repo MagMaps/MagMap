@@ -1,0 +1,29 @@
+// Ultra minimal - just get one NDVI value
+print('Minimal test starting...');
+
+// Load one asset
+var papyrus = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+print('Papyrus loaded');
+
+// Get one image
+var image = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterDate('2023-06-01', '2023-06-30')
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+              .first();
+
+print('Image loaded');
+
+// Calculate NDVI
+var ndvi = image.normalizedDifference(['B8', 'B4']);
+print('NDVI calculated');
+
+// Get one statistic
+var result = ndvi.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: papyrus.geometry().bounds(),
+  scale: 100,
+  maxPixels: 1e6
+});
+
+print('Result:', result.get('nd'));
+print('Test complete');

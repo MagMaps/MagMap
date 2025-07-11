@@ -1,0 +1,179 @@
+// Super simple script - no complex logic
+print('Starting script...');
+
+// Load assets
+var papyrus = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+var delta = ee.FeatureCollection("projects/ee-okavango/assets/shapes/okavango_outline_20241031");
+
+print('Assets loaded');
+
+// Get June 2023 Sentinel-2 data
+var june2023 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                 .filterDate('2023-06-01', '2023-06-30')
+                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+                 .median();
+
+print('June 2023 composite created');
+
+// Calculate NDVI
+var ndvi = june2023.normalizedDifference(['B8', 'B4']).rename('NDVI');
+
+print('NDVI calculated');
+
+// Calculate NDVI stats for each area
+var papyrus_ndvi = ndvi.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: papyrus.geometry(),
+  scale: 30,
+  maxPixels: 1e8
+});
+
+var phragmite_ndvi = ndvi.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: phragmite.geometry(),
+  scale: 30,
+  maxPixels: 1e8
+});
+
+var delta_ndvi = ndvi.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: delta.geometry(),
+  scale: 50,
+  maxPixels: 1e7
+});
+
+print('NDVI stats calculated');
+print('Papyrus NDVI:', papyrus_ndvi.get('NDVI'));
+print('Phragmite NDVI:', phragmite_ndvi.get('NDVI'));
+print('Delta NDVI:', delta_ndvi.get('NDVI'));
+
+// Calculate band stats for each area
+var papyrus_bands = june2023.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: papyrus.geometry(),
+  scale: 30,
+  maxPixels: 1e8
+});
+
+var phragmite_bands = june2023.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: phragmite.geometry(),
+  scale: 30,
+  maxPixels: 1e8
+});
+
+var delta_bands = june2023.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: delta.geometry(),
+  scale: 50,
+  maxPixels: 1e7
+});
+
+print('Band stats calculated');
+
+// Create features for export
+var ndvi_results = ee.FeatureCollection([
+  ee.Feature(null, {
+    area: 'Papyrus',
+    year: 2023,
+    month: 6,
+    ndvi: papyrus_ndvi.get('NDVI')
+  }),
+  ee.Feature(null, {
+    area: 'Phragmite', 
+    year: 2023,
+    month: 6,
+    ndvi: phragmite_ndvi.get('NDVI')
+  }),
+  ee.Feature(null, {
+    area: 'Delta',
+    year: 2023, 
+    month: 6,
+    ndvi: delta_ndvi.get('NDVI')
+  })
+]);
+
+var band_results = ee.FeatureCollection([
+  ee.Feature(null, {
+    area: 'Papyrus',
+    year: 2023,
+    month: 6,
+    B1: papyrus_bands.get('B1'),
+    B2: papyrus_bands.get('B2'),
+    B3: papyrus_bands.get('B3'),
+    B4: papyrus_bands.get('B4'),
+    B5: papyrus_bands.get('B5'),
+    B6: papyrus_bands.get('B6'),
+    B7: papyrus_bands.get('B7'),
+    B8: papyrus_bands.get('B8'),
+    B8A: papyrus_bands.get('B8A'),
+    B9: papyrus_bands.get('B9'),
+    B11: papyrus_bands.get('B11'),
+    B12: papyrus_bands.get('B12')
+  }),
+  ee.Feature(null, {
+    area: 'Phragmite',
+    year: 2023,
+    month: 6,
+    B1: phragmite_bands.get('B1'),
+    B2: phragmite_bands.get('B2'),
+    B3: phragmite_bands.get('B3'),
+    B4: phragmite_bands.get('B4'),
+    B5: phragmite_bands.get('B5'),
+    B6: phragmite_bands.get('B6'),
+    B7: phragmite_bands.get('B7'),
+    B8: phragmite_bands.get('B8'),
+    B8A: phragmite_bands.get('B8A'),
+    B9: phragmite_bands.get('B9'),
+    B11: phragmite_bands.get('B11'),
+    B12: phragmite_bands.get('B12')
+  }),
+  ee.Feature(null, {
+    area: 'Delta',
+    year: 2023,
+    month: 6,
+    B1: delta_bands.get('B1'),
+    B2: delta_bands.get('B2'),
+    B3: delta_bands.get('B3'),
+    B4: delta_bands.get('B4'),
+    B5: delta_bands.get('B5'),
+    B6: delta_bands.get('B6'),
+    B7: delta_bands.get('B7'),
+    B8: delta_bands.get('B8'),
+    B8A: delta_bands.get('B8A'),
+    B9: delta_bands.get('B9'),
+    B11: delta_bands.get('B11'),
+    B12: delta_bands.get('B12')
+  })
+]);
+
+print('Features created for export');
+
+// Export NDVI results
+Export.table.toDrive({
+  collection: ndvi_results,
+  description: 'Simple_NDVI_June2023',
+  folder: 'GEE_Simple',
+  fileFormat: 'CSV'
+});
+
+// Export band results  
+Export.table.toDrive({
+  collection: band_results,
+  description: 'Simple_Bands_June2023',
+  folder: 'GEE_Simple',
+  fileFormat: 'CSV'
+});
+
+print('Export tasks created');
+
+// Add to map
+Map.centerObject(delta.geometry(), 8);
+Map.addLayer(delta.geometry(), {color: 'orange'}, 'Delta');
+Map.addLayer(papyrus.geometry(), {color: 'green'}, 'Papyrus');
+Map.addLayer(phragmite.geometry(), {color: 'blue'}, 'Phragmite');
+Map.addLayer(ndvi, {min: 0, max: 1, palette: ['red', 'green']}, 'NDVI');
+
+print('Map layers added');
+print('Script completed - check Tasks tab');
