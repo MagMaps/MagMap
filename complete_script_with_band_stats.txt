@@ -1,0 +1,536 @@
+// ------------ ENHANCED SCRIPT WITH BAND STATISTICS ------------ //
+var papyrus   = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+var table     = ee.FeatureCollection("projects/ee-okavango/assets/shapes/okavango_outline_20241031");
+
+// Get unified geometries for AOIs
+var papyrusGeom = papyrus.geometry().dissolve({'maxError': 1});
+var phragmiteGeom = phragmite.geometry().dissolve({'maxError': 1});
+var okavangoDeltaGeom = table.geometry().dissolve({'maxError': 1});
+
+// ------------ FUNCTION: Monthly NDVI Composite ------------ //
+function getMonthlyNDVI(aoi, month, year) {
+  var start = ee.Date.fromYMD(year, month, 1);
+  var end   = start.advance(1, 'month');
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterBounds(aoi)
+              .filterDate(start, end)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+  
+  var imageCount = s2.size();
+  
+  // If no images, try without cloud filter
+  s2 = ee.Algorithms.If(
+    imageCount.eq(0),
+    ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filterBounds(aoi)
+      .filterDate(start, end),
+    s2
+  );
+  
+  imageCount = ee.ImageCollection(s2).size();
+  
+  // Create a dummy NDVI image if no data exists
+  var ndvi = ee.Algorithms.If(
+    imageCount.gt(0),
+    ee.ImageCollection(s2).median().clip(aoi).normalizedDifference(['B8','B4']).rename('NDVI'),
+    ee.Image.constant(-9999).rename('NDVI')
+  );
+  
+  return ee.Image(ndvi).set({
+    'month': month, 
+    'year': year,
+    'system:time_start': start.millis(),
+    'image_count': imageCount
+  });
+}
+
+// ------------ NEW FUNCTION: Monthly All-Band Composite ------------ //
+function getMonthlyAllBands(aoi, month, year) {
+  var start = ee.Date.fromYMD(year, month, 1);
+  var end   = start.advance(1, 'month');
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterBounds(aoi)
+              .filterDate(start, end)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+  
+  var imageCount = s2.size();
+  
+  // If no images, try without cloud filter
+  s2 = ee.Algorithms.If(
+    imageCount.eq(0),
+    ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+      .filterBounds(aoi)
+      .filterDate(start, end),
+    s2
+  );
+  
+  imageCount = ee.ImageCollection(s2).size();
+  
+  // Create composite with all bands or dummy image
+  var composite = ee.Algorithms.If(
+    imageCount.gt(0),
+    ee.ImageCollection(s2).median().clip(aoi),
+    ee.Image.constant(-9999).rename(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12'])
+  );
+  
+  return ee.Image(composite).set({
+    'month': month, 
+    'year': year,
+    'system:time_start': start.millis(),
+    'image_count': imageCount
+  });
+}
+
+// ------------ BUILD NDVI TIME SERIES ------------ //
+var months = ee.List.sequence(1, 12);
+var year   = 2023;
+
+var ndviPapyrusSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(papyrusGeom, m, year);
+  })
+);
+
+var ndviPhragmiteSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(phragmiteGeom, m, year);
+  })
+);
+
+var ndviOkavangoDeltaSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyNDVI(okavangoDeltaGeom, m, year);
+  })
+);
+
+// ------------ BUILD ALL-BAND TIME SERIES ------------ //
+var bandsPapyrusSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyAllBands(papyrusGeom, m, year);
+  })
+);
+
+var bandsPhragmiteSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyAllBands(phragmiteGeom, m, year);
+  })
+);
+
+var bandsOkavangoDeltaSeries = ee.ImageCollection.fromImages(
+  months.map(function(m) {
+    return getMonthlyAllBands(okavangoDeltaGeom, m, year);
+  })
+);
+
+print('NDVI series built');
+print('Papyrus NDVI series size:', ndviPapyrusSeries.size());
+print('Phragmite NDVI series size:', ndviPhragmiteSeries.size());
+print('Okavango Delta NDVI series size:', ndviOkavangoDeltaSeries.size());
+
+print('All-band series built');
+print('Papyrus bands series size:', bandsPapyrusSeries.size());
+print('Phragmite bands series size:', bandsPhragmiteSeries.size());
+print('Okavango Delta bands series size:', bandsOkavangoDeltaSeries.size());
+
+// ------------ EXPORT FUNCTION: NDVI ------------ //
+function exportNDVIMonthlyStats(series, aoiGeom, className) {
+  var features = series.map(function(img) {
+    var month = img.get('month');
+    var year = img.get('year');
+    var imageCount = img.get('image_count');
+    
+    var ndviMean = img.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: aoiGeom,
+      scale: 10,
+      maxPixels: 1e9,
+      bestEffort: true
+    }).get('NDVI');
+    
+    return ee.Feature(null, {
+      class: className,
+      year: year,
+      month: month,
+      date: ee.String(ee.Number(year).format()).cat('-').cat(ee.Number(month).format('%02d')),
+      ndvi_mean: ndviMean,
+      image_count: imageCount
+    });
+  });
+  
+  Export.table.toDrive({
+    collection: ee.FeatureCollection(features),
+    description: className + '_NDVI_Stats_2023',
+    folder: 'EE_Seasonal_Analysis',
+    fileFormat: 'CSV'
+  });
+  
+  print('NDVI export task created for:', className);
+}
+
+// ------------ NEW EXPORT FUNCTION: ALL BANDS MONTHLY ------------ //
+function exportAllBandsMonthlyStats(series, aoiGeom, className) {
+  var features = series.map(function(img) {
+    var month = img.get('month');
+    var year = img.get('year');
+    var imageCount = img.get('image_count');
+    
+    var stats = img.reduceRegion({
+      reducer: ee.Reducer.mean().combine({
+        reducer2: ee.Reducer.stdDev(),
+        sharedInputs: true
+      }),
+      geometry: aoiGeom,
+      scale: 10,
+      maxPixels: 1e9,
+      bestEffort: true
+    });
+    
+    return ee.Feature(null, {
+      class: className,
+      year: year,
+      month: month,
+      date: ee.String(ee.Number(year).format()).cat('-').cat(ee.Number(month).format('%02d')),
+      image_count: imageCount,
+      // All band means
+      B1_mean: stats.get('B1_mean'),
+      B2_mean: stats.get('B2_mean'),
+      B3_mean: stats.get('B3_mean'),
+      B4_mean: stats.get('B4_mean'),
+      B5_mean: stats.get('B5_mean'),
+      B6_mean: stats.get('B6_mean'),
+      B7_mean: stats.get('B7_mean'),
+      B8_mean: stats.get('B8_mean'),
+      B8A_mean: stats.get('B8A_mean'),
+      B9_mean: stats.get('B9_mean'),
+      B11_mean: stats.get('B11_mean'),
+      B12_mean: stats.get('B12_mean'),
+      // All band standard deviations
+      B1_stdDev: stats.get('B1_stdDev'),
+      B2_stdDev: stats.get('B2_stdDev'),
+      B3_stdDev: stats.get('B3_stdDev'),
+      B4_stdDev: stats.get('B4_stdDev'),
+      B5_stdDev: stats.get('B5_stdDev'),
+      B6_stdDev: stats.get('B6_stdDev'),
+      B7_stdDev: stats.get('B7_stdDev'),
+      B8_stdDev: stats.get('B8_stdDev'),
+      B8A_stdDev: stats.get('B8A_stdDev'),
+      B9_stdDev: stats.get('B9_stdDev'),
+      B11_stdDev: stats.get('B11_stdDev'),
+      B12_stdDev: stats.get('B12_stdDev')
+    });
+  });
+  
+  Export.table.toDrive({
+    collection: ee.FeatureCollection(features),
+    description: className + '_AllBands_Monthly_2023',
+    folder: 'EE_Seasonal_Analysis',
+    fileFormat: 'CSV'
+  });
+  
+  print('All-bands monthly export task created for:', className);
+}
+
+// ------------ NEW EXPORT FUNCTION: JUNE 2023 DETAILED BANDS ------------ //
+function exportJune2023BandStats(aoiGeom, className) {
+  var juneImage = getMonthlyAllBands(aoiGeom, 6, 2023); // June = month 6
+  
+  var stats = juneImage.reduceRegion({
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev().combine({
+        reducer2: ee.Reducer.min().combine({
+          reducer2: ee.Reducer.max(),
+          sharedInputs: true
+        }),
+        sharedInputs: true
+      }),
+      sharedInputs: true
+    }),
+    geometry: aoiGeom,
+    scale: 10,
+    maxPixels: 1e9,
+    bestEffort: true
+  });
+  
+  var imageCount = juneImage.get('image_count');
+  
+  var feature = ee.Feature(null, {
+    class: className,
+    year: 2023,
+    month: 6,
+    date: '2023-06',
+    image_count: imageCount,
+    // Band 1 - Coastal Aerosol
+    B1_mean: stats.get('B1_mean'),
+    B1_stdDev: stats.get('B1_stdDev'),
+    B1_min: stats.get('B1_min'),
+    B1_max: stats.get('B1_max'),
+    // Band 2 - Blue
+    B2_mean: stats.get('B2_mean'),
+    B2_stdDev: stats.get('B2_stdDev'),
+    B2_min: stats.get('B2_min'),
+    B2_max: stats.get('B2_max'),
+    // Band 3 - Green
+    B3_mean: stats.get('B3_mean'),
+    B3_stdDev: stats.get('B3_stdDev'),
+    B3_min: stats.get('B3_min'),
+    B3_max: stats.get('B3_max'),
+    // Band 4 - Red
+    B4_mean: stats.get('B4_mean'),
+    B4_stdDev: stats.get('B4_stdDev'),
+    B4_min: stats.get('B4_min'),
+    B4_max: stats.get('B4_max'),
+    // Band 5 - Red Edge
+    B5_mean: stats.get('B5_mean'),
+    B5_stdDev: stats.get('B5_stdDev'),
+    B5_min: stats.get('B5_min'),
+    B5_max: stats.get('B5_max'),
+    // Band 6 - Red Edge
+    B6_mean: stats.get('B6_mean'),
+    B6_stdDev: stats.get('B6_stdDev'),
+    B6_min: stats.get('B6_min'),
+    B6_max: stats.get('B6_max'),
+    // Band 7 - Red Edge
+    B7_mean: stats.get('B7_mean'),
+    B7_stdDev: stats.get('B7_stdDev'),
+    B7_min: stats.get('B7_min'),
+    B7_max: stats.get('B7_max'),
+    // Band 8 - NIR
+    B8_mean: stats.get('B8_mean'),
+    B8_stdDev: stats.get('B8_stdDev'),
+    B8_min: stats.get('B8_min'),
+    B8_max: stats.get('B8_max'),
+    // Band 8A - Red Edge
+    B8A_mean: stats.get('B8A_mean'),
+    B8A_stdDev: stats.get('B8A_stdDev'),
+    B8A_min: stats.get('B8A_min'),
+    B8A_max: stats.get('B8A_max'),
+    // Band 9 - Water Vapour
+    B9_mean: stats.get('B9_mean'),
+    B9_stdDev: stats.get('B9_stdDev'),
+    B9_min: stats.get('B9_min'),
+    B9_max: stats.get('B9_max'),
+    // Band 11 - SWIR
+    B11_mean: stats.get('B11_mean'),
+    B11_stdDev: stats.get('B11_stdDev'),
+    B11_min: stats.get('B11_min'),
+    B11_max: stats.get('B11_max'),
+    // Band 12 - SWIR
+    B12_mean: stats.get('B12_mean'),
+    B12_stdDev: stats.get('B12_stdDev'),
+    B12_min: stats.get('B12_min'),
+    B12_max: stats.get('B12_max')
+  });
+  
+  Export.table.toDrive({
+    collection: ee.FeatureCollection([feature]),
+    description: className + '_June2023_DetailedBands',
+    folder: 'EE_Seasonal_Analysis',
+    fileFormat: 'CSV'
+  });
+  
+  print('June 2023 detailed bands export task created for:', className);
+}
+
+// ------------ EXECUTE ALL EXPORTS ------------ //
+// Export NDVI monthly statistics
+exportNDVIMonthlyStats(ndviPapyrusSeries, papyrusGeom, 'Papyrus');
+exportNDVIMonthlyStats(ndviPhragmiteSeries, phragmiteGeom, 'Phragmite');
+exportNDVIMonthlyStats(ndviOkavangoDeltaSeries, okavangoDeltaGeom, 'OkavangoDelta');
+
+// Export all bands monthly statistics (Jan-Dec 2023)
+exportAllBandsMonthlyStats(bandsPapyrusSeries, papyrusGeom, 'Papyrus');
+exportAllBandsMonthlyStats(bandsPhragmiteSeries, phragmiteGeom, 'Phragmite');
+exportAllBandsMonthlyStats(bandsOkavangoDeltaSeries, okavangoDeltaGeom, 'OkavangoDelta');
+
+// Export detailed June 2023 band statistics
+exportJune2023BandStats(papyrusGeom, 'Papyrus');
+exportJune2023BandStats(phragmiteGeom, 'Phragmite');
+exportJune2023BandStats(okavangoDeltaGeom, 'OkavangoDelta');
+
+// ------------ CREATE CHARTS FOR VALID DATA ------------ //
+var papyrusValid = ndviPapyrusSeries.filter(ee.Filter.gt('image_count', 0));
+var phragmiteValid = ndviPhragmiteSeries.filter(ee.Filter.gt('image_count', 0));
+var okavangoDeltaValid = ndviOkavangoDeltaSeries.filter(ee.Filter.gt('image_count', 0));
+
+print('Valid months - Papyrus:', papyrusValid.size());
+print('Valid months - Phragmite:', phragmiteValid.size());
+print('Valid months - Okavango Delta:', okavangoDeltaValid.size());
+
+// NDVI Charts
+var chartPapyrus = ui.Chart.image.series({
+  imageCollection: papyrusValid,
+  region: papyrusGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Papyrus',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['green']
+});
+print(chartPapyrus);
+
+var chartPhragmite = ui.Chart.image.series({
+  imageCollection: phragmiteValid,
+  region: phragmiteGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Phragmite',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['blue']
+});
+print(chartPhragmite);
+
+var chartOkavangoDelta = ui.Chart.image.series({
+  imageCollection: okavangoDeltaValid,
+  region: okavangoDeltaGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI – Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['orange']
+});
+print(chartOkavangoDelta);
+
+// Combined NDVI comparison chart
+var combinedChart = ui.Chart.image.series({
+  imageCollection: papyrusValid.merge(phragmiteValid).merge(okavangoDeltaValid),
+  region: papyrusGeom.union(phragmiteGeom).union(okavangoDeltaGeom),
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NDVI Comparison - Papyrus vs Phragmite vs Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'NDVI', minValue: 0, maxValue: 1},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['green', 'blue', 'orange'],
+  series: {
+    0: {labelInLegend: 'Papyrus'},
+    1: {labelInLegend: 'Phragmite'},
+    2: {labelInLegend: 'Okavango Delta'}
+  }
+});
+print(combinedChart);
+
+// ------------ NEW CHARTS: BAND ANALYSIS ------------ //
+// Create charts for key bands (visible and NIR)
+var bandsValidPapyrus = bandsPapyrusSeries.filter(ee.Filter.gt('image_count', 0));
+var bandsValidPhragmite = bandsPhragmiteSeries.filter(ee.Filter.gt('image_count', 0));
+var bandsValidDelta = bandsOkavangoDeltaSeries.filter(ee.Filter.gt('image_count', 0));
+
+// RGB bands chart (B2=Blue, B3=Green, B4=Red)
+var rgbChart = ui.Chart.image.series({
+  imageCollection: bandsValidDelta.select(['B2', 'B3', 'B4']),
+  region: okavangoDeltaGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal RGB Bands - Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'Reflectance'},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['blue', 'green', 'red'],
+  series: {
+    0: {labelInLegend: 'Blue (B2)'},
+    1: {labelInLegend: 'Green (B3)'},
+    2: {labelInLegend: 'Red (B4)'}
+  }
+});
+print(rgbChart);
+
+// NIR and SWIR bands chart
+var nirSwirChart = ui.Chart.image.series({
+  imageCollection: bandsValidDelta.select(['B8', 'B11', 'B12']),
+  region: okavangoDeltaGeom,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start'
+}).setOptions({
+  title: 'Seasonal NIR and SWIR Bands - Okavango Delta',
+  hAxis: {title: 'Month'},
+  vAxis: {title: 'Reflectance'},
+  lineWidth: 2,
+  pointSize: 3,
+  colors: ['darkred', 'brown', 'orange'],
+  series: {
+    0: {labelInLegend: 'NIR (B8)'},
+    1: {labelInLegend: 'SWIR1 (B11)'},
+    2: {labelInLegend: 'SWIR2 (B12)'}
+  }
+});
+print(nirSwirChart);
+
+// ------------ ADD LAYERS TO MAP ------------ //
+Map.centerObject(okavangoDeltaGeom, 8);
+Map.addLayer(okavangoDeltaGeom, {color: 'orange', fillColor: 'orange00'}, 'Okavango Delta Outline');
+Map.addLayer(papyrusGeom, {color: 'green'}, 'Papyrus AOI');
+Map.addLayer(phragmiteGeom, {color: 'blue'}, 'Phragmite AOI');
+
+// Add sample images for visualization
+var sampleMonth = 6; // June
+var sampleNDVI = getMonthlyNDVI(okavangoDeltaGeom, sampleMonth, year);
+var sampleBands = getMonthlyAllBands(okavangoDeltaGeom, sampleMonth, year);
+
+Map.addLayer(sampleNDVI, {
+  min: 0,
+  max: 1,
+  palette: ['red', 'yellow', 'green']
+}, 'Sample NDVI (June 2023)');
+
+// True color composite
+Map.addLayer(sampleBands, {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000
+}, 'True Color (June 2023)');
+
+// False color composite (vegetation)
+Map.addLayer(sampleBands, {
+  bands: ['B8', 'B4', 'B3'],
+  min: 0,
+  max: 3000
+}, 'False Color NIR (June 2023)');
+
+print('=== ANALYSIS SUMMARY ===');
+print('Script completed! Check Tasks tab to run exports.');
+print('');
+print('📊 EXPORTS CREATED:');
+print('1. NDVI Monthly Stats (3 files) - Jan-Dec 2023');
+print('2. All Bands Monthly Stats (3 files) - Jan-Dec 2023');
+print('3. June 2023 Detailed Band Stats (3 files) - Mean, StdDev, Min, Max');
+print('');
+print('📈 CHARTS CREATED:');
+print('1. Individual NDVI trends (3 charts)');
+print('2. Combined NDVI comparison (1 chart)');
+print('3. RGB bands seasonal trends (1 chart)');
+print('4. NIR/SWIR bands seasonal trends (1 chart)');
+print('');
+print('🗺️ MAP LAYERS:');
+print('1. Study area boundaries');
+print('2. NDVI visualization (June 2023)');
+print('3. True color composite (June 2023)');
+print('4. False color NIR composite (June 2023)');
+print('');
+print('💾 Total exports: 9 CSV files');
+print('📊 Total charts: 6 charts');
+print('🗺️ Total map layers: 7 layers');
