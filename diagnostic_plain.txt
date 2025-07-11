@@ -1,0 +1,71 @@
+// ------------ DIAGNOSTIC VERSION ------------ //
+var papyrus   = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+
+// Check if the collections are loaded properly
+print('Papyrus collection size:', papyrus.size());
+print('Phragmite collection size:', phragmite.size());
+
+// Get geometries
+var papyrusGeom = papyrus.geometry().dissolve({'maxError': 1});
+var phragmiteGeom = phragmite.geometry().dissolve({'maxError': 1});
+
+// Print geometry info
+print('Papyrus bounds:', papyrusGeom.bounds());
+print('Phragmite bounds:', phragmiteGeom.bounds());
+
+// Test a single month to see what's happening
+var testMonth = 6; // June
+var testYear = 2023;
+var start = ee.Date.fromYMD(testYear, testMonth, 1);
+var end = start.advance(1, 'month');
+
+print('Test date range:', start, 'to', end);
+
+// Check Sentinel-2 availability without filters
+var s2_all = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                .filterBounds(papyrusGeom)
+                .filterDate(start, end);
+
+print('Total S2 images in date range (no cloud filter):', s2_all.size());
+
+// Check with cloud filter
+var s2_filtered = s2_all.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10));
+print('S2 images after cloud filter (<10%):', s2_filtered.size());
+
+// Try with more lenient cloud filter
+var s2_lenient = s2_all.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+print('S2 images with lenient cloud filter (<50%):', s2_lenient.size());
+
+// Check what bands are available in the first image (if any)
+var firstImage = ee.Image(s2_lenient.first());
+print('First image band names:', firstImage.bandNames());
+print('First image properties:', firstImage.toDictionary(['system:id', 'CLOUDY_PIXEL_PERCENTAGE', 'system:time_start']));
+
+// Let's also try a broader date range
+var broadStart = ee.Date.fromYMD(2023, 1, 1);
+var broadEnd = ee.Date.fromYMD(2023, 12, 31);
+var s2_broad = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                 .filterBounds(papyrusGeom)
+                 .filterDate(broadStart, broadEnd)
+                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50));
+
+print('S2 images in entire 2023 (cloud <50%):', s2_broad.size());
+
+// Visualize the AOIs on the map
+Map.centerObject(papyrusGeom, 12);
+Map.addLayer(papyrusGeom, {color: 'red'}, 'Papyrus AOI');
+Map.addLayer(phragmiteGeom, {color: 'blue'}, 'Phragmite AOI');
+
+// Add first available S2 image to map if exists
+var conditionalImage = ee.Algorithms.If(
+  s2_broad.size().gt(0),
+  s2_broad.first(),
+  ee.Image.constant(0)
+);
+
+Map.addLayer(conditionalImage, {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000
+}, 'First S2 Image (if available)');
