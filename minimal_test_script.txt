@@ -1,0 +1,98 @@
+// ------------ MINIMAL TEST SCRIPT ------------ //
+print('Starting minimal test...');
+
+// Test 1: Try to load assets
+print('=== TEST 1: Loading Assets ===');
+try {
+  var papyrus = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+  print('✓ Papyrus loaded');
+} catch (error) {
+  print('✗ Papyrus failed to load:', error);
+}
+
+try {
+  var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+  print('✓ Phragmite loaded');
+} catch (error) {
+  print('✗ Phragmite failed to load:', error);
+}
+
+try {
+  var table = ee.FeatureCollection("projects/ee-okavango/assets/shapes/okavango_outline_20241031");
+  print('✓ Delta table loaded');
+} catch (error) {
+  print('✗ Delta table failed to load:', error);
+}
+
+// Test 2: Check asset sizes
+print('=== TEST 2: Asset Sizes ===');
+print('Papyrus size:', papyrus.size());
+print('Phragmite size:', phragmite.size());
+print('Delta size:', table.size());
+
+// Test 3: Check geometries
+print('=== TEST 3: Geometries ===');
+var papyrusGeom = papyrus.geometry();
+var phragmiteGeom = phragmite.geometry();
+var deltaGeom = table.geometry();
+
+print('Papyrus geometry type:', papyrusGeom.type());
+print('Phragmite geometry type:', phragmiteGeom.type());
+print('Delta geometry type:', deltaGeom.type());
+
+// Test 4: Check bounds
+print('=== TEST 4: Bounds ===');
+print('Papyrus bounds:', papyrusGeom.bounds());
+print('Phragmite bounds:', phragmiteGeom.bounds());
+print('Delta bounds:', deltaGeom.bounds());
+
+// Test 5: Try basic Sentinel-2 query
+print('=== TEST 5: Sentinel-2 Query ===');
+var testDate = ee.Date('2023-06-01');
+var endDate = ee.Date('2023-06-30');
+
+print('Test date range:', testDate, 'to', endDate);
+
+var s2_test = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                .filterDate(testDate, endDate)
+                .filterBounds(deltaGeom)
+                .limit(5); // Only get 5 images for testing
+
+print('S2 test collection size:', s2_test.size());
+print('First S2 image ID:', s2_test.first().get('system:id'));
+
+// Test 6: Try simple map display
+print('=== TEST 6: Map Display ===');
+Map.centerObject(deltaGeom, 6);
+Map.addLayer(deltaGeom, {color: 'red'}, 'Delta Test');
+Map.addLayer(papyrusGeom, {color: 'green'}, 'Papyrus Test');
+Map.addLayer(phragmiteGeom, {color: 'blue'}, 'Phragmite Test');
+
+// Test 7: Try basic image processing
+print('=== TEST 7: Basic Image Processing ===');
+var testImage = s2_test.first();
+print('Test image bands:', testImage.bandNames());
+
+var testNDVI = testImage.normalizedDifference(['B8', 'B4']).rename('NDVI');
+print('✓ NDVI calculation successful');
+
+Map.addLayer(testNDVI, {
+  min: 0,
+  max: 1,
+  palette: ['red', 'yellow', 'green']
+}, 'Test NDVI');
+
+// Test 8: Try basic statistics
+print('=== TEST 8: Basic Statistics ===');
+var testStats = testNDVI.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: papyrusGeom,
+  scale: 100, // Use large scale for speed
+  maxPixels: 1e6
+});
+
+print('Test NDVI mean:', testStats.get('NDVI'));
+
+print('=== ALL TESTS COMPLETED ===');
+print('If you see this message, the basic functionality works!');
+print('Check the map and console output above for any errors.');
