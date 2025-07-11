@@ -1,0 +1,110 @@
+// Papyrus and Phragmite only - no delta processing
+print('Starting papyrus and phragmite analysis...');
+
+// Load only the two smaller assets
+var papyrus = ee.FeatureCollection("projects/magmapsproject/assets/06302025_papyrus_layer");
+var phragmite = ee.FeatureCollection("projects/magmapsproject/assets/phragmite");
+
+print('Assets loaded');
+print('Papyrus size:', papyrus.size());
+print('Phragmite size:', phragmite.size());
+
+// Get June 2023 Sentinel-2 data
+var june2023 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                 .filterDate('2023-06-01', '2023-06-30')
+                 .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+                 .median();
+
+print('June 2023 composite created');
+print('Available bands:', june2023.bandNames());
+
+// Calculate band statistics for papyrus area
+var papyrus_bands = june2023.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: papyrus.geometry(),
+  scale: 30,
+  maxPixels: 1e8,
+  bestEffort: true
+});
+
+// Calculate band statistics for phragmite area  
+var phragmite_bands = june2023.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: phragmite.geometry(),
+  scale: 30,
+  maxPixels: 1e8,
+  bestEffort: true
+});
+
+print('Band statistics calculated');
+
+// Print results to console
+print('Papyrus band statistics:', papyrus_bands);
+print('Phragmite band statistics:', phragmite_bands);
+
+// Create features for export (only papyrus and phragmite)
+var band_results = ee.FeatureCollection([
+  ee.Feature(null, {
+    area: 'Papyrus',
+    year: 2023,
+    month: 6,
+    B1: papyrus_bands.get('B1'),
+    B2: papyrus_bands.get('B2'),
+    B3: papyrus_bands.get('B3'),
+    B4: papyrus_bands.get('B4'),
+    B5: papyrus_bands.get('B5'),
+    B6: papyrus_bands.get('B6'),
+    B7: papyrus_bands.get('B7'),
+    B8: papyrus_bands.get('B8'),
+    B8A: papyrus_bands.get('B8A'),
+    B9: papyrus_bands.get('B9'),
+    B11: papyrus_bands.get('B11'),
+    B12: papyrus_bands.get('B12')
+  }),
+  ee.Feature(null, {
+    area: 'Phragmite',
+    year: 2023,
+    month: 6,
+    B1: phragmite_bands.get('B1'),
+    B2: phragmite_bands.get('B2'),
+    B3: phragmite_bands.get('B3'),
+    B4: phragmite_bands.get('B4'),
+    B5: phragmite_bands.get('B5'),
+    B6: phragmite_bands.get('B6'),
+    B7: phragmite_bands.get('B7'),
+    B8: phragmite_bands.get('B8'),
+    B8A: phragmite_bands.get('B8A'),
+    B9: phragmite_bands.get('B9'),
+    B11: phragmite_bands.get('B11'),
+    B12: phragmite_bands.get('B12')
+  })
+]);
+
+print('Features created for export');
+
+// Export band results
+Export.table.toDrive({
+  collection: band_results,
+  description: 'Papyrus_Phragmite_Bands_June2023',
+  folder: 'GEE_TwoAreas',
+  fileFormat: 'CSV'
+});
+
+print('Export task created');
+
+// Add to map (center on both areas)
+var combinedGeometry = papyrus.geometry().union(phragmite.geometry());
+Map.centerObject(combinedGeometry, 10);
+Map.addLayer(papyrus.geometry(), {color: 'green'}, 'Papyrus');
+Map.addLayer(phragmite.geometry(), {color: 'blue'}, 'Phragmite');
+
+// Add RGB composite
+var rgbVis = {
+  min: 0,
+  max: 3000,
+  bands: ['B4', 'B3', 'B2']
+};
+Map.addLayer(june2023, rgbVis, 'RGB Composite');
+
+print('Map layers added');
+print('Papyrus and Phragmite analysis completed - check Tasks tab');
