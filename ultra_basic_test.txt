@@ -1,0 +1,18 @@
+// Ultra basic test
+print('Hello World - GEE is working!');
+print('Current date:', ee.Date(Date.now()));
+print('Test number:', 123);
+
+// Test basic Earth Engine
+var point = ee.Geometry.Point([0, 0]);
+print('Test point created:', point);
+
+// Test basic image
+var image = ee.Image('COPERNICUS/S2_SR_HARMONIZED/20230601T101031_20230601T101026_T32TNS');
+print('Test image loaded');
+
+// Add to map
+Map.setCenter(0, 0, 2);
+Map.addLayer(point, {color: 'red'}, 'Test Point');
+
+print('Script completed - if you see this, GEE is working!');
